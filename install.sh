@@ -264,7 +264,14 @@ install_font_windows() {
     fi
     cp "$f" "$dest/$base"
     local display_name="${base%.*}"
-    reg add "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts" \
+    # Git Bash's MSYS runtime auto-rewrites argv elements that look like
+    # paths before exec'ing a non-MSYS binary like reg.exe — it mangles the
+    # backslash-separated registry key path into something reg.exe rejects
+    # with "Invalid syntax". MSYS2_ARG_CONV_EXCL="*" disables that rewriting
+    # for this call. (Confirmed via manual reg add testing — without it,
+    # every registration in this loop silently failed via the `|| true`
+    # below, so the font file was installed but never registered.)
+    MSYS2_ARG_CONV_EXCL="*" reg add "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts" \
       /v "$display_name (TrueType)" /t REG_SZ /d "$base" /f >/dev/null 2>&1 || true
     installed=1
   done
@@ -377,7 +384,8 @@ if [ "$WANT_TERMINAL_CONFIG" -eq 1 ] && [ "$font_installed_ok" -eq 1 ]; then
         confirm "VS Code's integrated terminal needs an explicit font-fallback entry to show icons — add it to $path?" y || do_edit=0
       fi
       if [ "$do_edit" -eq 1 ]; then
-        "$INSTALLED_BIN" init --configure-vscode --apply && log "Updated $path"
+        # The binary already prints its own "Updated <path>" line.
+        "$INSTALLED_BIN" init --configure-vscode --apply
       fi
     elif [ "$name" = "Windows Terminal" ] && [ -n "$path" ]; then
       log "Windows Terminal: $note"
@@ -392,6 +400,6 @@ fi
 log ""
 log "Done. Start a new Claude Code session to see the status line."
 if [ "$font_installed_ok" -eq 1 ]; then
-  log "Glyph test (should show distinct icons, not boxes): $(printf '\357\213\233 \357\204\230 \357\203\244 \357\200\227 \357\204\263')"
+  log "Glyph test (should show 5 distinct icons, not boxes): $(printf '\357\213\233 \357\220\230 \357\203\244 \357\200\227 \357\204\263')"
 fi
 log "Options: --version vX.Y.Z to pin, --no-font, --no-terminal-config, --yes for non-interactive."
