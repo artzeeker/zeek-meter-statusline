@@ -59,6 +59,22 @@ log()  { printf '%s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
 die()  { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
+# curl's built-in --retry only covers certain HTTP-transient failure classes,
+# not a local write error (e.g. curl exit 23, seen in testing from brief
+# antivirus file-lock contention on a freshly-created temp file) — so retry
+# at the shell level too, for any failure mode. `curl_retry` behaves like
+# `curl -fsSL` otherwise; pass any additional curl args through.
+curl_retry() {
+  local tries=3 attempt
+  for attempt in $(seq 1 "$tries"); do
+    if curl -fsSL "$@"; then
+      return 0
+    fi
+    [ "$attempt" -lt "$tries" ] && sleep 1
+  done
+  return 1
+}
+
 confirm() {
   # confirm "question" default(y|n)
   local question="$1" default="$2" reply
@@ -141,7 +157,7 @@ mkdir -p "$CLAUDE_DIR"
 resolve_latest_version() {
   # GitHub's release JSON is pretty-printed (one field per line), so a plain
   # grep for the first tag_name line is reliable without needing jq.
-  curl -fsSL "$API/releases/latest" \
+  curl_retry "$API/releases/latest" \
     | grep -m1 '"tag_name"' \
     | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
 }
@@ -160,9 +176,9 @@ CHECKSUMS_URL="$GITHUB/releases/download/$VERSION/SHA256SUMS"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-curl -fsSL "$DOWNLOAD_URL" -o "$WORK_DIR/$ARCHIVE_NAME" \
+curl_retry "$DOWNLOAD_URL" -o "$WORK_DIR/$ARCHIVE_NAME" \
   || die "failed to download $DOWNLOAD_URL (check the version exists: $GITHUB/releases)"
-curl -fsSL "$CHECKSUMS_URL" -o "$WORK_DIR/SHA256SUMS" \
+curl_retry "$CHECKSUMS_URL" -o "$WORK_DIR/SHA256SUMS" \
   || die "failed to download SHA256SUMS for $VERSION"
 
 verify_checksum() {
@@ -313,11 +329,11 @@ if [ "$WANT_FONT" -eq 1 ]; then
       log "Nerd Font symbols already installed."
       font_installed_ok=1
     else
-      nf_latest="$(curl -fsSL "https://api.github.com/repos/$NERD_FONTS_REPO/releases/latest" \
+      nf_latest="$(curl_retry "https://api.github.com/repos/$NERD_FONTS_REPO/releases/latest" \
         | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
       if [ -n "$nf_latest" ]; then
         nf_url="https://github.com/$NERD_FONTS_REPO/releases/download/$nf_latest/${NERD_FONTS_ASSET}.zip"
-        if curl -fsSL "$nf_url" -o "$WORK_DIR/nerd-fonts-symbols.zip"; then
+        if curl_retry "$nf_url" -o "$WORK_DIR/nerd-fonts-symbols.zip"; then
           case "$OS" in
             windows) install_font_windows "$WORK_DIR/nerd-fonts-symbols.zip" ;;
             macos) install_font_macos "$WORK_DIR/nerd-fonts-symbols.zip" ;;
