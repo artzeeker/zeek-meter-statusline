@@ -1,0 +1,21 @@
+[package]
+name = "zeek-meter-statusline"
+version = "1.0.0"
+edition = "2021"
+description = "Pace-aware status line for Claude Code"
+license = "MIT"
+repository = "https://github.com/artzeeker/zeek-meter-statusline"
+
+[[bin]]
+name = "zeek-meter-statusline"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
