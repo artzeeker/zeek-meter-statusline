@@ -72,8 +72,12 @@ function Confirm-Action([string]$Question, [string]$Default = "y") {
 # Platform detection (Windows only for this script; only x86_64 has a build)
 # ---------------------------------------------------------------------------
 
-$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
+# PROCESSOR_ARCHITEW6432 is set only when this process is 32-bit running on a
+# 64-bit OS (WOW64); it reflects the real OS arch in that case, unlike
+# PROCESSOR_ARCHITECTURE which would report x86. Fall back to
+# PROCESSOR_ARCHITECTURE for a native (non-WOW64) process.
+$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($arch -ne "AMD64") {
     Die "no Windows build for $arch (only x86_64)"
 }
 $Target = "x86_64-pc-windows-msvc"
