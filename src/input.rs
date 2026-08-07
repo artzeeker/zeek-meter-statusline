@@ -58,9 +58,8 @@ pub struct RateWindow {
 
 impl Input {
     /// Parses `raw` into an `Input`. Empty or malformed input yields the
-    /// all-`None` default rather than an error, matching statusline.js's
-    /// `try { JSON.parse(...) } catch { data = {} }` behavior — a status line
-    /// that goes blank because of a JSON hiccup is worse than one that shows
+    /// all-`None` default rather than an error — a status line that goes
+    /// blank because of a JSON hiccup is worse than one that shows
     /// "unknown"/"n/a" placeholders.
     pub fn parse(raw: &str) -> Input {
         if raw.trim().is_empty() {

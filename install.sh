@@ -12,7 +12,7 @@
 #
 # No dependency beyond curl + the downloaded binary itself: settings.json and
 # VS Code config edits are delegated to `zeek-meter-statusline init ...`
-# rather than done here in bash, so this script never needs jq or node.
+# rather than done here in bash, so this script never needs jq.
 set -euo pipefail
 
 REPO="artzeeker/zeek-meter-statusline"
@@ -216,29 +216,12 @@ fi
 found_bin="$(find "$extract_dir" -type f -name "${BIN_NAME}${EXE_SUFFIX}" | head -n1)"
 [ -n "$found_bin" ] || die "archive didn't contain ${BIN_NAME}${EXE_SUFFIX}"
 
-# ---------------------------------------------------------------------------
-# Migrate off the old Node-based statusline, if present
-# ---------------------------------------------------------------------------
-
-SETTINGS_PATH="$CLAUDE_DIR/settings.json"
-OLD_NODE_SCRIPT="$CLAUDE_DIR/statusline.js"
-migrating_from_node=0
-if [ -f "$SETTINGS_PATH" ] && grep -q 'statusline\.js' "$SETTINGS_PATH" 2>/dev/null; then
-  migrating_from_node=1
-  log "Detected the previous Node-based statusline; migrating to the compiled binary."
-fi
-
 cp "$found_bin" "$INSTALLED_BIN"
 chmod +x "$INSTALLED_BIN" 2>/dev/null || true
 log "Installed $INSTALLED_BIN"
 
-if [ "$migrating_from_node" -eq 1 ] && [ -f "$OLD_NODE_SCRIPT" ]; then
-  rm -f "$OLD_NODE_SCRIPT"
-  log "Removed the old $OLD_NODE_SCRIPT"
-fi
-
 # ---------------------------------------------------------------------------
-# settings.json (delegated to the binary — no jq/node needed here)
+# settings.json (delegated to the binary — no jq needed here)
 # ---------------------------------------------------------------------------
 
 "$INSTALLED_BIN" init --merge-settings

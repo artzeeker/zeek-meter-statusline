@@ -12,7 +12,7 @@ With Nerd Font icons enabled (the default — see [Nerd Font glyphs](#nerd-font-
  Sonnet 5 |  main* |  [####------] 42% |  [#####|----] 60% |  [##---|----] 20% | :)
 ```
 
-**No runtime dependency at all** — not even Node. The binary is statically compiled per platform; the installer only needs `curl` (already on every supported OS). If you're coming from the old Node-based version, this is a straight upgrade: the installer detects and removes it automatically.
+**No runtime dependency at all** — the binary is statically compiled per platform; the installer only needs `curl` (already on every supported OS).
 
 ## Install
 
@@ -104,7 +104,7 @@ The font installer specifically fetches [`NerdFontsSymbolsOnly`](https://github.
 
 ## Performance
 
-The old Node-based version cost ~358ms per invocation on Windows (Node startup + a `git status` subprocess for the branch name), measurably slower than the 300ms debounce Claude Code uses between statusline refreshes. This version's actual computation — JSON parsing, git state, bar rendering — is sub-millisecond; branch name comes from reading `.git/HEAD` directly instead of spawning `git`, and the dirty-flag check (which does need `git status`) is cached for ~2 seconds per directory instead of running on every refresh. What's left is pure OS process-spawn overhead (~30ms measured via Git Bash on Windows — the same floor a completely no-op binary pays), still 3-4x faster than a no-op Node startup alone.
+Actual computation — JSON parsing, git state, bar rendering — is sub-millisecond, well under the 300ms debounce Claude Code uses between statusline refreshes. Branch name comes from reading `.git/HEAD` directly instead of spawning `git`, and the dirty-flag check (which does need `git status`) is cached for ~2 seconds per directory instead of running on every refresh. What's left is pure OS process-spawn overhead (~30ms measured via Git Bash on Windows — the same floor a completely no-op binary pays).
 
 ## Versioning
 

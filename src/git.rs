@@ -3,9 +3,8 @@
 //! Branch name is read directly from `.git/HEAD` (a file read, microseconds)
 //! instead of spawning `git branch --show-current` (~80ms measured on this
 //! machine) — see the "Two performance wins" section of the project plan.
-//! This also sidesteps statusline.js's `"## No commits yet on <branch>"`
-//! special case entirely: `.git/HEAD` already points at the branch ref even
-//! before the first commit exists.
+//! This also handles the "no commits yet" case gracefully: `.git/HEAD`
+//! already points at the branch ref even before the first commit exists.
 //!
 //! The dirty flag genuinely needs git's index comparison, so it still shells
 //! out to `git status --porcelain`, but the result is cached to a temp file

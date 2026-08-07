@@ -2,16 +2,12 @@
 //!
 //! This is invoked by the installer as `zeek-meter-statusline init
 //! --merge-settings` rather than done in bash, so the installer never needs
-//! `jq` or `node` — the same reason the *old* Node-based installer could shell
-//! out to `node -e` for this, but a bash-only installer for a Rust binary
-//! can't assume any particular scripting runtime is present. The
-//! already-downloaded binary is the one dependency we can always rely on.
+//! `jq` — the already-downloaded binary is the one dependency we can always
+//! rely on.
 //!
 //! Existing settings keys are preserved; only `statusLine` is added or
-//! overwritten. This also happens to be how migration off the old Node
-//! script works: if `settings.json` already has `statusLine.command: "node
-//! ~/.claude/statusline.js"`, it's unconditionally replaced with the new
-//! binary's command.
+//! overwritten: whatever the previous `statusLine.command` was, it's
+//! unconditionally replaced with this binary's command.
 
 use serde_json::{Map, Value};
 use std::io;

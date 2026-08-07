@@ -4,8 +4,8 @@
 //!  - default (no subcommand): reads the session JSON Claude Code pipes to
 //!    stdin, prints one rendered status line.
 //!  - `init ...`: one-shot setup helpers the installer (`install.sh`) calls
-//!    into, so the installer itself never needs `node`/`jq` to do JSON work —
-//!    see `settings.rs` and `terminal.rs` for why that matters.
+//!    into, so the installer itself never needs `jq` to do JSON work — see
+//!    `settings.rs` and `terminal.rs` for why that matters.
 
 mod bar;
 mod config;

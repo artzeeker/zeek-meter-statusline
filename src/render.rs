@@ -1,8 +1,7 @@
 //! Assembles the final status line: model, git branch, context bar, 5h/7d
-//! rate-limit bars, and the mood face. Ported from the `windowSeg`/segment
-//! -assembly logic in the original statusline.js, including its exact Nerd
-//! Font codepoints (Font Awesome glyphs, present in the `NerdFontsSymbolsOnly`
-//! pack this project installs).
+//! rate-limit bars, and the mood face, using the exact Nerd Font codepoints
+//! (Font Awesome glyphs, present in the `NerdFontsSymbolsOnly` pack this
+//! project installs).
 
 use crate::bar::{
     build_bar, color_for_context, color_for_pace, fmt_pct, Color, BAR_WIDTH, DIM, RESET,

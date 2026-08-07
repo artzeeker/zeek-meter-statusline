@@ -14,7 +14,7 @@ To pass params, download into a scriptblock and invoke it directly:
 No dependency beyond Invoke-WebRequest/Invoke-RestMethod (built into
 PowerShell) and the downloaded binary itself: settings.json and VS Code
 config edits are delegated to `zeek-meter-statusline init ...` rather than
-done here, so this script never needs jq or node.
+done here, so this script never needs jq.
 #>
 [CmdletBinding()]
 param(
@@ -138,26 +138,14 @@ try {
     if (-not $foundBin) { Die "archive didn't contain $BinName.exe" }
 
     # -----------------------------------------------------------------------
-    # Migrate off the old Node-based statusline, if present
+    # Install the binary
     # -----------------------------------------------------------------------
-
-    $SettingsPath = Join-Path $ClaudeDir "settings.json"
-    $OldNodeScript = Join-Path $ClaudeDir "statusline.js"
-    $migratingFromNode = (Test-Path $SettingsPath) -and (Select-String -Path $SettingsPath -Pattern "statusline\.js" -Quiet)
-    if ($migratingFromNode) {
-        Write-Log "Detected the previous Node-based statusline; migrating to the compiled binary."
-    }
 
     Copy-Item -Path $foundBin -Destination $InstalledBin -Force
     Write-Log "Installed $InstalledBin"
 
-    if ($migratingFromNode -and (Test-Path $OldNodeScript)) {
-        Remove-Item $OldNodeScript -Force
-        Write-Log "Removed the old $OldNodeScript"
-    }
-
     # -----------------------------------------------------------------------
-    # settings.json (delegated to the binary - no jq/node needed here)
+    # settings.json (delegated to the binary - no jq needed here)
     # -----------------------------------------------------------------------
 
     & $InstalledBin init --merge-settings

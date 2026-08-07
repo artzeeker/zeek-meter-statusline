@@ -1,6 +1,4 @@
-//! Bar rendering, pace-marker placement, and color thresholds. Ported 1:1 from
-//! `buildBar`/`colorForPace`/`colorForContext` in the original statusline.js —
-//! see tests/fixtures for byte-identical parity cases against that script.
+//! Bar rendering, pace-marker placement, and color thresholds.
 
 pub const BAR_WIDTH: usize = 10;
 

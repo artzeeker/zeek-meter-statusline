@@ -4,7 +4,7 @@
 //! v1 flips the default from off to **on** — the whole point of the auto
 //! font-install flow (see `README.md`) is that Nerd Font glyphs should just
 //! work out of the box. `CLAUDE_STATUSLINE_NERDFONT` is kept as the env var
-//! name for continuity with the old script, but its meaning inverts: `=0`
+//! name for continuity with earlier releases, but its meaning inverts: `=0`
 //! now *disables* nerd-font rendering (previously `=1` was required to
 //! enable it).
 //!
