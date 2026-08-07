@@ -16,11 +16,19 @@ With Nerd Font icons enabled (the default — see [Nerd Font glyphs](#nerd-font-
 
 ## Install
 
+macOS, Linux, Git Bash, or WSL:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/artzeeker/zeek-meter-statusline/main/install.sh | bash
 ```
 
-The installer asks a couple of questions (skip with `--yes`, or answer them individually via flags below):
+Windows (PowerShell — don't use the `bash` command above there; PowerShell's `curl` is an alias for `Invoke-WebRequest` and doesn't understand `-fsSL`):
+
+```powershell
+irm https://raw.githubusercontent.com/artzeeker/zeek-meter-statusline/main/install.ps1 | iex
+```
+
+The installer asks a couple of questions (skip with `--yes` / `-Yes`, or answer them individually via flags below):
 
 - Install a small Nerd Font symbols pack (~2.85MB, no admin needed) so the icons render?
 - If VS Code's integrated terminal is detected without Nerd Font glyph support, add a font fallback entry for it?
@@ -29,16 +37,23 @@ It downloads the correct release binary for your platform, verifies its checksum
 
 Options:
 
-| Flag | Effect |
-|---|---|
-| `--yes` | Non-interactive: accept every default (installs the font, configures detected terminals) |
-| `--version vX.Y.Z` | Pin a specific release instead of the latest |
-| `--no-font` | Skip the Nerd Font install; the statusline falls back to plain ASCII bars |
-| `--no-terminal-config` | Skip editing any terminal config, even if one is detected as needing it |
+| Flag (bash) | Flag (PowerShell) | Effect |
+|---|---|---|
+| `--yes` | `-Yes` | Non-interactive: accept every default (installs the font, configures detected terminals) |
+| `--version vX.Y.Z` | `-Version vX.Y.Z` | Pin a specific release instead of the latest |
+| `--no-font` | `-NoFont` | Skip the Nerd Font install; the statusline falls back to plain ASCII bars |
+| `--no-terminal-config` | `-NoTerminalConfig` | Skip editing any terminal config, even if one is detected as needing it |
 
 ```bash
 curl -fsSL .../install.sh | bash -s -- --yes
 curl -fsSL .../install.sh | bash -s -- --version v1.0.0 --no-font
+```
+
+`irm | iex` runs the script with no way to pass params directly, so download it into a scriptblock first to pass flags in PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/artzeeker/zeek-meter-statusline/main/install.ps1))) -Yes
+& ([scriptblock]::Create((irm .../install.ps1))) -Version v1.0.0 -NoFont
 ```
 
 ### Manual install
