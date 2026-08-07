@@ -154,16 +154,24 @@ mkdir -p "$CLAUDE_DIR"
 # Version resolution + download
 # ---------------------------------------------------------------------------
 
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+# GitHub's release JSON is pretty-printed (one field per line), so a plain
+# grep for the first tag_name line is reliable without needing jq. Downloads
+# to a file rather than piping straight into grep: retrying a failed curl
+# *through* a live pipe is unsafe (a downstream reader like `grep -m1` can
+# close its end early, or a retried attempt's output can land mixed with a
+# prior partial stream in the same pipe) — a file gets cleanly overwritten
+# on each attempt instead.
 resolve_latest_version() {
-  # GitHub's release JSON is pretty-printed (one field per line), so a plain
-  # grep for the first tag_name line is reliable without needing jq.
-  curl_retry "$API/releases/latest" \
-    | grep -m1 '"tag_name"' \
-    | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+  local api_url="$1" dest="$WORK_DIR/latest_release.json"
+  curl_retry "$api_url" -o "$dest" || return 1
+  grep -m1 '"tag_name"' "$dest" | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
 }
 
 if [ -z "$VERSION" ]; then
-  VERSION="$(resolve_latest_version)"
+  VERSION="$(resolve_latest_version "$API/releases/latest")"
   [ -n "$VERSION" ] || die "could not resolve the latest release version"
 fi
 
@@ -172,9 +180,6 @@ log "Installing zeek-meter-statusline $VERSION for $TARGET..."
 ARCHIVE_NAME="${BIN_NAME}-${TARGET}.${ARCHIVE_EXT}"
 DOWNLOAD_URL="$GITHUB/releases/download/$VERSION/$ARCHIVE_NAME"
 CHECKSUMS_URL="$GITHUB/releases/download/$VERSION/SHA256SUMS"
-
-WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
 
 curl_retry "$DOWNLOAD_URL" -o "$WORK_DIR/$ARCHIVE_NAME" \
   || die "failed to download $DOWNLOAD_URL (check the version exists: $GITHUB/releases)"
@@ -329,8 +334,7 @@ if [ "$WANT_FONT" -eq 1 ]; then
       log "Nerd Font symbols already installed."
       font_installed_ok=1
     else
-      nf_latest="$(curl_retry "https://api.github.com/repos/$NERD_FONTS_REPO/releases/latest" \
-        | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+      nf_latest="$(resolve_latest_version "https://api.github.com/repos/$NERD_FONTS_REPO/releases/latest")"
       if [ -n "$nf_latest" ]; then
         nf_url="https://github.com/$NERD_FONTS_REPO/releases/download/$nf_latest/${NERD_FONTS_ASSET}.zip"
         if curl_retry "$nf_url" -o "$WORK_DIR/nerd-fonts-symbols.zip"; then
