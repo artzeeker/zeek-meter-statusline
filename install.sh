@@ -237,29 +237,43 @@ install_font_windows() {
   local extract="$WORK_DIR/font-extract"
   mkdir -p "$extract"
   unzip -o -q "$zip_path" -d "$extract"
-  local installed=0
+  local copied=0
+  local reg_failed=0
   for f in "$extract"/*.ttf "$extract"/*.otf; do
     [ -e "$f" ] || continue
     local base
     base="$(basename "$f")"
-    if [ -f "$dest/$base" ]; then
-      continue
+    if [ ! -f "$dest/$base" ]; then
+      cp "$f" "$dest/$base"
+      copied=1
     fi
-    cp "$f" "$dest/$base"
     local display_name="${base%.*}"
+    # Registering a per-user font with a bare filename (just "$base") makes
+    # Windows resolve it relative to %WINDIR%\Fonts, the machine-scope font
+    # dir — the file installed here is never found, so the font silently
+    # never becomes usable even though the reg add "succeeds". Per-user
+    # registrations need the full path, same as Windows' own per-user font
+    # entries use. Always (re-)write it, even when the file already existed,
+    # so a re-run can repair a machine still holding a bare-filename value
+    # from an older/broken install.
+    local full_win_path
+    full_win_path="$(cygpath -w "$dest/$base" 2>/dev/null)" || full_win_path="${dest//\//\\}\\$base"
     # Git Bash's MSYS runtime auto-rewrites argv elements that look like
     # paths before exec'ing a non-MSYS binary like reg.exe — it mangles the
-    # backslash-separated registry key path into something reg.exe rejects
-    # with "Invalid syntax". MSYS2_ARG_CONV_EXCL="*" disables that rewriting
-    # for this call. (Confirmed via manual reg add testing — without it,
-    # every registration in this loop silently failed via the `|| true`
-    # below, so the font file was installed but never registered.)
-    MSYS2_ARG_CONV_EXCL="*" reg add "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts" \
-      /v "$display_name (TrueType)" /t REG_SZ /d "$base" /f >/dev/null 2>&1 || true
-    installed=1
+    # backslash-separated registry key path (and this value) into something
+    # reg.exe rejects with "Invalid syntax". MSYS2_ARG_CONV_EXCL="*" disables
+    # that rewriting for this call. (Confirmed via manual reg add testing —
+    # without it, every registration in this loop silently failed.)
+    if ! MSYS2_ARG_CONV_EXCL="*" reg add "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts" \
+      /v "$display_name (TrueType)" /t REG_SZ /d "$full_win_path" /f >/dev/null 2>&1; then
+      reg_failed=1
+    fi
   done
-  [ "$installed" -eq 1 ] && log "Installed Nerd Font symbols to $dest (restart your terminal to pick it up)." \
-    || log "Nerd Font symbols already installed."
+  if [ "$reg_failed" -eq 1 ]; then
+    warn "failed to register one or more Nerd Font symbols in the registry"
+  fi
+  [ "$copied" -eq 1 ] && log "Installed Nerd Font symbols to $dest." \
+    || log "Nerd Font symbols already present on disk; verified/repaired registration."
 }
 
 install_font_macos() {
@@ -305,11 +319,22 @@ install_font_linux() {
   fi
 }
 
+# On Windows this checks whether the font is actually resolvable by
+# applications, not just whether a file with a guessed name exists on disk —
+# a bare-filename registry registration (the bug this installer used to
+# have) copies the file successfully but the font never becomes enumerable,
+# so a filesystem-only check would report a false "installed".
 font_already_installed() {
   case "$OS" in
-    windows) [ -d "$LOCALAPPDATA/Microsoft/Windows/Fonts" ] && ls "$LOCALAPPDATA/Microsoft/Windows/Fonts" 2>/dev/null | grep -qi "symbols nerd font" ;;
-    macos) [ -d "$HOME/Library/Fonts" ] && ls "$HOME/Library/Fonts" 2>/dev/null | grep -qi "symbols nerd font" ;;
-    linux) [ -d "$HOME/.local/share/fonts" ] && ls "$HOME/.local/share/fonts" 2>/dev/null | grep -qi "symbols nerd font" ;;
+    windows)
+      command -v powershell.exe >/dev/null 2>&1 && powershell.exe -NoProfile -NonInteractive -Command \
+        "Add-Type -AssemblyName System.Drawing; \$found = (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name -match 'Nerd Font'; if (\$found.Count -gt 0) { exit 0 } else { exit 1 }" \
+        >/dev/null 2>&1
+      ;;
+    # Filenames don't have spaces ("SymbolsNerdFont-Regular.ttf"); match
+    # loosely so this doesn't silently stop matching on a naming change.
+    macos) [ -d "$HOME/Library/Fonts" ] && ls "$HOME/Library/Fonts" 2>/dev/null | grep -qiE "symbols ?nerd ?font" ;;
+    linux) [ -d "$HOME/.local/share/fonts" ] && ls "$HOME/.local/share/fonts" 2>/dev/null | grep -qiE "symbols ?nerd ?font" ;;
   esac
 }
 
@@ -322,7 +347,6 @@ if [ "$WANT_FONT" -eq 1 ]; then
   if [ "$do_font" -eq 1 ]; then
     if font_already_installed; then
       log "Nerd Font symbols already installed."
-      font_installed_ok=1
     else
       nf_latest="$(resolve_latest_version "https://api.github.com/repos/$NERD_FONTS_REPO/releases/latest")"
       if [ -n "$nf_latest" ]; then
@@ -333,7 +357,6 @@ if [ "$WANT_FONT" -eq 1 ]; then
             macos) install_font_macos "$WORK_DIR/nerd-fonts-symbols.zip" ;;
             linux) install_font_linux "$WORK_DIR/nerd-fonts-symbols.zip" ;;
           esac
-          font_installed_ok=1
         else
           warn "could not download the Nerd Font symbols pack; continuing without it"
         fi
@@ -341,6 +364,11 @@ if [ "$WANT_FONT" -eq 1 ]; then
         warn "could not resolve the latest Nerd Fonts release; continuing without font install"
       fi
     fi
+    # Verify rather than assume: on Windows, registration can silently fail
+    # to become enumerable (this is exactly how the tofu-box bug shipped
+    # previously), so trust the same check used above, not "the
+    # download/copy/registry-write didn't error".
+    font_already_installed && font_installed_ok=1
   fi
 fi
 
@@ -348,16 +376,25 @@ if [ "$font_installed_ok" -eq 0 ]; then
   # Persist the "no Nerd Font" choice so the statusline defaults to plain
   # ASCII bars instead of showing tofu boxes for missing glyphs. Lives in a
   # small dedicated config file (not settings.json) so it survives even if
-  # the user never sets a shell env var — important on Windows.
+  # the user never sets a shell env var — important on Windows. Only write
+  # this if the user hasn't already made an explicit choice in this file —
+  # a re-run repairing a previously-broken install shouldn't clobber a
+  # deliberate `"nerd_font": true`.
   cfg="$CLAUDE_DIR/zeek-meter-statusline.json"
-  printf '{"nerd_font": false}\n' > "$cfg"
+  if [ ! -f "$cfg" ] || ! grep -q '"nerd_font"' "$cfg" 2>/dev/null; then
+    printf '{"nerd_font": false}\n' > "$cfg"
+  fi
   log "Nerd Font icons disabled (set CLAUDE_STATUSLINE_NERDFONT=1 or edit $cfg once a Nerd Font is available)."
+  if [ "$WANT_FONT" -eq 1 ] && [ "$OS" = "windows" ]; then
+    log "The font pack was installed but isn't active yet in this session. Sign out and back in (or reboot), then re-run this installer to re-verify — or set CLAUDE_STATUSLINE_NERDFONT=1 once you've confirmed icons render."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 # Terminal config (delegated to the binary for the JSON edit itself)
 # ---------------------------------------------------------------------------
 
+vscode_configured=0
 if [ "$WANT_TERMINAL_CONFIG" -eq 1 ] && [ "$font_installed_ok" -eq 1 ]; then
   while IFS='|' read -r name path needs_edit note; do
     [ -z "$name" ] && continue
@@ -369,6 +406,7 @@ if [ "$WANT_TERMINAL_CONFIG" -eq 1 ] && [ "$font_installed_ok" -eq 1 ]; then
       if [ "$do_edit" -eq 1 ]; then
         # The binary already prints its own "Updated <path>" line.
         "$INSTALLED_BIN" init --configure-vscode --apply
+        vscode_configured=1
       fi
     elif [ "$name" = "Windows Terminal" ] && [ -n "$path" ]; then
       log "Windows Terminal: $note"
@@ -384,5 +422,8 @@ log ""
 log "Done. Start a new Claude Code session to see the status line."
 if [ "$font_installed_ok" -eq 1 ]; then
   log "Glyph test (should show 5 distinct icons, not boxes): $(printf '\357\213\233 \357\220\230 \357\203\244 \357\200\227 \357\204\263')"
+  if [ "$vscode_configured" -eq 1 ]; then
+    log "Fully quit and reopen VS Code (not just reload window) — it only picks up fonts at process start."
+  fi
 fi
 log "Options: --version vX.Y.Z to pin, --no-font, --no-terminal-config, --yes for non-interactive."

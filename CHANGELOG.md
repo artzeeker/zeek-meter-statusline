@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.1
+
+- **Fix: Nerd Font icons never rendered on Windows (tofu boxes), even after a reboot.** Both installers registered the per-user font in `HKCU\...\CurrentVersion\Fonts` with a bare filename; Windows resolves that relative to the machine-wide `%WINDIR%\Fonts` dir, so the font was copied but never actually enumerable. Now registered with the full path, matching how Windows registers its own per-user fonts. `install.ps1` also activates newly-registered fonts in the current session immediately (`AddFontResource` + `WM_FONTCHANGE` broadcast) instead of requiring a sign-out.
+- **Fix: font-already-installed detection never matched**, on any platform, because it checked for a space in `symbols nerd font` against filenames that don't have one — every install re-downloaded the ~2.85MB font pack. Detection is now a real usability check (`InstalledFontCollection` on Windows; a corrected filename pattern on macOS/Linux) instead of a guess.
+- **Fix: the installer reported success without verifying it.** `$fontInstalledOk`/`font_installed_ok` used to mean "the download and copy didn't throw"; it now means "the font is confirmed enumerable," so the "Glyph test" message and the `nerd_font: false` fallback-config write are both trustworthy.
+- **Re-running the installer now repairs a previously-broken install** instead of skipping re-registration because the font file was already on disk.
+
 ## v1.0.0
 
 Full rewrite to a native Rust binary.

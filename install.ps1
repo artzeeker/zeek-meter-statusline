@@ -154,9 +154,41 @@ try {
     # Nerd Font (symbols-only, ~2.85MB, user-scope, no admin)
     # -------------------------------------------------------------------
 
-    function Test-FontInstalled {
-        $dest = Join-Path $env:LOCALAPPDATA "Microsoft\Windows\Fonts"
-        (Test-Path $dest) -and (Get-ChildItem $dest -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "(?i)symbols nerd font" })
+    # Checks whether the font is actually resolvable by applications, not just
+    # whether a file with a guessed name exists on disk. This is the only
+    # check that can't produce a false positive: a bare-filename HKCU
+    # registration (the bug this installer used to have - see CHANGELOG)
+    # copies the file successfully but never becomes enumerable, and a
+    # filesystem-only check would happily report success anyway.
+    function Test-NerdFontUsable {
+        try {
+            Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+            $families = (New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name }
+            return [bool]($families | Where-Object { $_ -match "(?i)symbols nerd font" })
+        } catch {
+            return $false
+        }
+    }
+
+    # Loads newly-registered fonts into the current session so they render
+    # without requiring a sign-out. Best-effort: if this fails, the fonts are
+    # still correctly registered and will pick up at next logon.
+    function Enable-FontNow([string[]]$FontPaths) {
+        try {
+            Add-Type -MemberDefinition @"
+[DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern int AddFontResourceW(string lpFileName);
+[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint Msg, UIntPtr wParam, UIntPtr lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+"@ -Name "FontApi" -Namespace "ZeekMeterStatusline" -ErrorAction Stop
+            foreach ($p in $FontPaths) {
+                [ZeekMeterStatusline.FontApi]::AddFontResourceW($p) | Out-Null
+            }
+            $result = [UIntPtr]::Zero
+            [ZeekMeterStatusline.FontApi]::SendMessageTimeoutW([IntPtr]0xFFFF, 0x001D, [UIntPtr]::Zero, [UIntPtr]::Zero, 0x0002, 1000, [ref]$result) | Out-Null
+        } catch {
+            # Non-fatal: registration on disk/registry already succeeded.
+        }
     }
 
     function Install-NerdFont([string]$ZipPath) {
@@ -164,33 +196,45 @@ try {
         New-Item -ItemType Directory -Path $dest -Force | Out-Null
         $extract = Join-Path $WorkDir "font-extract"
         Expand-Archive -Path $ZipPath -DestinationPath $extract -Force
-        $installed = $false
+        $regKey = "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts"
+        $copied = $false
+        $enabledPaths = @()
         Get-ChildItem -Path $extract -Include "*.ttf", "*.otf" -Recurse | ForEach-Object {
             $destFile = Join-Path $dest $_.Name
-            if (Test-Path $destFile) { return }
-            Copy-Item $_.FullName $destFile
+            if (-not (Test-Path $destFile)) {
+                Copy-Item $_.FullName $destFile
+                $copied = $true
+            }
+            # Always (re-)ensure the registry value, even if the file already
+            # existed: this is what lets a re-run repair a machine stuck with
+            # a bare-filename registration from an older/broken install.
             $displayName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-            New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts" `
-                -Name "$displayName (TrueType)" -Value $_.Name -PropertyType String -Force | Out-Null
-            $installed = $true
+            $valueName = "$displayName (TrueType)"
+            $existing = (Get-ItemProperty -Path $regKey -Name $valueName -ErrorAction SilentlyContinue).$valueName
+            if ($existing -ne $destFile) {
+                New-ItemProperty -Path $regKey -Name $valueName -Value $destFile -PropertyType String -Force | Out-Null
+            }
+            $enabledPaths += $destFile
         }
-        if ($installed) {
-            Write-Log "Installed Nerd Font symbols to $dest (restart your terminal to pick it up)."
+        if ($enabledPaths.Count -gt 0) {
+            Enable-FontNow $enabledPaths
+        }
+        if ($copied) {
+            Write-Log "Installed Nerd Font symbols to $dest."
         } else {
-            Write-Log "Nerd Font symbols already installed."
+            Write-Log "Nerd Font symbols already present on disk; verified/repaired registration."
         }
     }
 
     $fontInstalledOk = $false
     if (-not $NoFont) {
         $doFont = $true
-        if (-not $Yes -and -not (Test-FontInstalled)) {
+        if (-not $Yes -and -not (Test-NerdFontUsable)) {
             $doFont = Confirm-Action "Install the Nerd Font symbols pack (~2.85MB, user-scope, no admin needed) so icons render?" "y"
         }
         if ($doFont) {
-            if (Test-FontInstalled) {
+            if (Test-NerdFontUsable) {
                 Write-Log "Nerd Font symbols already installed."
-                $fontInstalledOk = $true
             } else {
                 $nfLatest = Resolve-LatestVersion "https://api.github.com/repos/$NerdFontsRepo/releases/latest"
                 if ($nfLatest) {
@@ -199,7 +243,6 @@ try {
                     try {
                         Get-FileWithRetry $nfUrl $nfZip
                         Install-NerdFont $nfZip
-                        $fontInstalledOk = $true
                     } catch {
                         Write-Warn "could not download the Nerd Font symbols pack; continuing without it"
                     }
@@ -207,22 +250,43 @@ try {
                     Write-Warn "could not resolve the latest Nerd Fonts release; continuing without font install"
                 }
             }
+            # Verify rather than assume: registration can silently fail to
+            # become enumerable (this is exactly how the tofu-box bug
+            # shipped previously), so trust InstalledFontCollection, not
+            # "the copy/registry-write didn't throw".
+            $fontInstalledOk = Test-NerdFontUsable
         }
     }
 
     if (-not $fontInstalledOk) {
         # Persist the "no Nerd Font" choice so the statusline defaults to
         # plain ASCII bars instead of showing tofu boxes for missing glyphs.
+        # Only write this if the user hasn't already made an explicit choice
+        # in this file - a re-run repairing a previously-broken install
+        # should not clobber a deliberate `"nerd_font": true`.
         $cfg = Join-Path $ClaudeDir "zeek-meter-statusline.json"
-        Set-Content -Path $cfg -Value '{"nerd_font": false}' -NoNewline
-        Add-Content -Path $cfg -Value ""
+        $hasExplicitChoice = $false
+        if (Test-Path $cfg) {
+            try {
+                $existingCfg = Get-Content $cfg -Raw | ConvertFrom-Json -ErrorAction Stop
+                $hasExplicitChoice = $null -ne $existingCfg.nerd_font
+            } catch { }
+        }
+        if (-not $hasExplicitChoice) {
+            Set-Content -Path $cfg -Value '{"nerd_font": false}' -NoNewline
+            Add-Content -Path $cfg -Value ""
+        }
         Write-Log "Nerd Font icons disabled (set CLAUDE_STATUSLINE_NERDFONT=1 or edit $cfg once a Nerd Font is available)."
+        if (-not $NoFont) {
+            Write-Log "The font pack was installed but isn't active yet in this session. Sign out and back in (or reboot), then re-run this installer to re-verify - or set CLAUDE_STATUSLINE_NERDFONT=1 once you've confirmed icons render."
+        }
     }
 
     # -------------------------------------------------------------------
     # Terminal config (delegated to the binary for the JSON edit itself)
     # -------------------------------------------------------------------
 
+    $vscodeConfigured = $false
     if (-not $NoTerminalConfig -and $fontInstalledOk) {
         & $InstalledBin init --detect-terminals | ForEach-Object {
             $parts = $_ -split '\|'
@@ -235,6 +299,7 @@ try {
                 }
                 if ($doEdit) {
                     & $InstalledBin init --configure-vscode --apply
+                    $vscodeConfigured = $true
                 }
             } elseif ($name -eq "Windows Terminal" -and $path) {
                 Write-Log "Windows Terminal: $note"
@@ -251,6 +316,9 @@ try {
     if ($fontInstalledOk) {
         $glyphs = @(0xF2DB, 0xF418, 0xF0E4, 0xF017, 0xF133) | ForEach-Object { [char]::ConvertFromUtf32($_) }
         Write-Log ("Glyph test (should show 5 distinct icons, not boxes): " + ($glyphs -join " "))
+        if ($vscodeConfigured) {
+            Write-Log "Fully quit and reopen VS Code (not just reload window) - it only picks up fonts at process start."
+        }
     }
     Write-Log "Options: -Version vX.Y.Z to pin, -NoFont, -NoTerminalConfig, -Yes for non-interactive (see script header for how to pass these through irm|iex)."
 } finally {
