@@ -17,9 +17,16 @@
 
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::fsutil;
 
 pub const SYMBOLS_FONT_NAME: &str = "Symbols Nerd Font Mono";
+/// The exact fragment `configure_vscode` appends to an existing
+/// `terminal.integrated.fontFamily` value. `unconfigure_vscode` looks for
+/// this verbatim and only removes what it finds — if the user has since
+/// edited the value further, the fragment likely won't match exactly, and
+/// this module leaves it alone rather than guess.
+const APPENDED_FRAGMENT: &str = ", 'Symbols Nerd Font Mono'";
 
 pub struct Detection {
     pub name: &'static str,
@@ -163,8 +170,7 @@ pub fn configure_vscode(apply: bool) -> std::io::Result<Option<PathBuf>> {
         _ => format!("{}, '{SYMBOLS_FONT_NAME}'", default_primary_font()),
     };
 
-    let backup = backup_path(&path);
-    std::fs::copy(&path, &backup)?;
+    fsutil::backup(&path)?;
 
     settings.insert(
         "terminal.integrated.fontFamily".into(),
@@ -176,18 +182,58 @@ pub fn configure_vscode(apply: bool) -> std::io::Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-fn backup_path(path: &Path) -> PathBuf {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let mut name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("settings.json")
-        .to_string();
-    name.push_str(&format!(".bak-{millis}"));
-    path.with_file_name(name)
+/// The inverse of `configure_vscode`: strips exactly the
+/// `, 'Symbols Nerd Font Mono'` fragment that was appended, leaving the rest
+/// of `terminal.integrated.fontFamily` (including the user's primary font)
+/// intact. No-ops — returning `Ok(None)` — when the file doesn't exist, the
+/// setting isn't present, or the exact fragment isn't found (the user edited
+/// the value further, so guessing what to remove would risk damaging it).
+pub fn unconfigure_vscode(apply: bool) -> std::io::Result<Option<PathBuf>> {
+    let Some(path) = vscode_settings_path() else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&path)?;
+    let mut settings: Map<String, Value> = match serde_json::from_str(&raw) {
+        Ok(Value::Object(m)) => m,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "VS Code settings.json is not a JSON object",
+            ))
+        }
+    };
+
+    let Some(Value::String(existing)) = settings.get("terminal.integrated.fontFamily") else {
+        return Ok(None);
+    };
+    let Some(restored) = strip_appended_fragment(existing) else {
+        return Ok(None);
+    };
+
+    if !apply {
+        return Ok(Some(path));
+    }
+
+    fsutil::backup(&path)?;
+    settings.insert(
+        "terminal.integrated.fontFamily".into(),
+        Value::String(restored),
+    );
+    let pretty = serde_json::to_string_pretty(&Value::Object(settings))?;
+    std::fs::write(&path, format!("{pretty}\n"))?;
+
+    Ok(Some(path))
+}
+
+/// Strips the exact fragment `configure_vscode` appends, if present as a
+/// verbatim suffix. `None` means "leave it alone" — either there's nothing
+/// to strip, or the value was edited further and guessing is unsafe.
+fn strip_appended_fragment(existing: &str) -> Option<String> {
+    existing.strip_suffix(APPENDED_FRAGMENT).map(str::to_string)
 }
 
 #[cfg(test)]
@@ -213,5 +259,29 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zms-terminal-test2-{}", std::process::id()));
         let path = dir.join("does-not-exist.json");
         assert!(!already_has_nerd_font(&path));
+    }
+
+    #[test]
+    fn strip_appended_fragment_restores_original_value() {
+        assert_eq!(
+            strip_appended_fragment("Consolas, 'Symbols Nerd Font Mono'").as_deref(),
+            Some("Consolas")
+        );
+    }
+
+    #[test]
+    fn strip_appended_fragment_noops_on_hand_edited_value() {
+        // The user tweaked the fallback list further (e.g. added their own
+        // font after ours) — the exact suffix no longer matches, so this
+        // must not guess and mangle it.
+        assert_eq!(
+            strip_appended_fragment("Consolas, 'Symbols Nerd Font Mono', 'MyFont'"),
+            None
+        );
+    }
+
+    #[test]
+    fn strip_appended_fragment_noops_when_fragment_absent() {
+        assert_eq!(strip_appended_fragment("Consolas"), None);
     }
 }

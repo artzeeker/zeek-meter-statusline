@@ -1,20 +1,23 @@
-//! Merges a `statusLine` entry into Claude Code's `~/.claude/settings.json`.
+//! Merges (and unmerges) a `statusLine` entry in Claude Code's
+//! `~/.claude/settings.json`.
 //!
 //! This is invoked by the installer as `zeek-meter-statusline init
 //! --merge-settings` rather than done in bash, so the installer never needs
 //! `jq` — the already-downloaded binary is the one dependency we can always
-//! rely on.
+//! rely on. `uninstall` calls `unmerge_settings` the same way.
 //!
-//! Existing settings keys are preserved; only `statusLine` is added or
-//! overwritten: whatever the previous `statusLine.command` was, it's
-//! unconditionally replaced with this binary's command.
+//! Existing settings keys are preserved; only `statusLine` is added, removed,
+//! or overwritten: whatever the previous `statusLine.command` was, `merge`
+//! unconditionally replaces it with this binary's command, and `unmerge`
+//! only removes it if it still points at this binary — never at whatever
+//! other status line the user may have switched to since installing.
 
 use serde_json::{Map, Value};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::claude_dir;
+use crate::fsutil;
 
 pub fn settings_path() -> Option<PathBuf> {
     claude_dir().map(|d| d.join("settings.json"))
@@ -32,6 +35,10 @@ fn status_line_command() -> String {
         std::env::consts::EXE_SUFFIX
     )
 }
+
+/// Substring used to recognize "this is our statusLine entry" regardless of
+/// exact path form (`~/...`, an absolute path, `.exe` or not).
+const BINARY_MARKER: &str = "zeek-meter-statusline";
 
 pub fn merge_settings() -> io::Result<PathBuf> {
     let path = settings_path().ok_or_else(|| {
@@ -52,9 +59,68 @@ pub fn merge_settings() -> io::Result<PathBuf> {
     status_line.insert("command".into(), Value::String(status_line_command()));
     settings.insert("statusLine".into(), Value::Object(status_line));
 
-    let pretty = serde_json::to_string_pretty(&Value::Object(settings))?;
-    std::fs::write(&path, format!("{pretty}\n"))?;
+    write_settings(&path, &settings)?;
     Ok(path)
+}
+
+fn is_owned_by_us(settings: &Map<String, Value>) -> bool {
+    matches!(
+        settings.get("statusLine"),
+        Some(Value::Object(sl)) if matches!(sl.get("command"), Some(Value::String(cmd)) if cmd.contains(BINARY_MARKER))
+    )
+}
+
+/// Read-only check: does `settings.json` exist, and if so, does its
+/// `statusLine` point at this binary? Used by `uninstall --dry-run` to
+/// report what *would* happen without writing anything.
+pub fn status_line_owned() -> io::Result<(PathBuf, bool)> {
+    let path = settings_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine home directory (HOME/USERPROFILE unset)",
+        )
+    })?;
+    if !path.exists() {
+        return Ok((path, false));
+    }
+    let settings = load_existing(&path)?;
+    Ok((path, is_owned_by_us(&settings)))
+}
+
+/// The inverse of `merge_settings`. Removes the `statusLine` key only if its
+/// `.command` mentions this binary; if the user has since pointed
+/// `statusLine` at something else, leaves it untouched and returns
+/// `Ok((path, false))` so the caller can warn instead of silently doing
+/// nothing. Every other settings key is preserved either way. Backs the file
+/// up before writing, same as `merge_settings`'s caller-side contract for
+/// invalid JSON.
+pub fn unmerge_settings() -> io::Result<(PathBuf, bool)> {
+    let path = settings_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot determine home directory (HOME/USERPROFILE unset)",
+        )
+    })?;
+
+    if !path.exists() {
+        return Ok((path, false));
+    }
+
+    let mut settings = load_existing(&path)?;
+
+    if !is_owned_by_us(&settings) {
+        return Ok((path, false));
+    }
+
+    fsutil::backup(&path)?;
+    settings.remove("statusLine");
+    write_settings(&path, &settings)?;
+    Ok((path, true))
+}
+
+fn write_settings(path: &Path, settings: &Map<String, Value>) -> io::Result<()> {
+    let pretty = serde_json::to_string_pretty(&Value::Object(settings.clone()))?;
+    std::fs::write(path, format!("{pretty}\n"))
 }
 
 fn load_existing(path: &Path) -> io::Result<Map<String, Value>> {
@@ -68,7 +134,7 @@ fn load_existing(path: &Path) -> io::Result<Map<String, Value>> {
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Object(m)) => Ok(m),
         _ => {
-            let backup = backup_path(path);
+            let backup = fsutil::backup_path(path);
             std::fs::copy(path, &backup)?;
             eprintln!(
                 "Warning: existing settings.json was invalid JSON. Backed it up to {}",
@@ -77,20 +143,6 @@ fn load_existing(path: &Path) -> io::Result<Map<String, Value>> {
             Ok(Map::new())
         }
     }
-}
-
-fn backup_path(path: &Path) -> PathBuf {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let mut name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("settings.json")
-        .to_string();
-    name.push_str(&format!(".bak-{millis}"));
-    path.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -146,6 +198,39 @@ mod tests {
         let path = dir.join("settings.json");
         let settings = load_existing(&path).unwrap();
         assert!(settings.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unmerge_removes_our_statusline_and_keeps_siblings() {
+        let dir = scratch_dir("unmerge-owned");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"model":"opusplan","statusLine":{"type":"command","command":"~/.claude/zeek-meter-statusline"}}"#,
+        )
+        .unwrap();
+
+        let mut settings = load_existing(&path).unwrap();
+        assert!(is_owned_by_us(&settings));
+        settings.remove("statusLine");
+        assert_eq!(settings.get("model").unwrap(), "opusplan");
+        assert!(!settings.contains_key("statusLine"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unmerge_leaves_foreign_statusline_untouched() {
+        let dir = scratch_dir("unmerge-foreign");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"statusLine":{"type":"command","command":"~/.claude/some-other-tool"}}"#,
+        )
+        .unwrap();
+
+        let settings = load_existing(&path).unwrap();
+        assert!(!is_owned_by_us(&settings));
         fs::remove_dir_all(&dir).ok();
     }
 }

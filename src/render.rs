@@ -1,203 +1,165 @@
-//! Assembles the final status line: model, git branch, context bar, 5h/7d
-//! rate-limit bars, and the mood face, using the exact Nerd Font codepoints
-//! (Font Awesome glyphs, present in the `NerdFontsSymbolsOnly` pack this
-//! project installs).
+//! Assembles the final status line(s): selects segments per `Config`,
+//! applies the active theme/color depth, joins them for `one-line` layout or
+//! splits identity-vs-meters across two rows for `two-line`, and drops
+//! low-priority segments if the assembled row would overflow `$COLUMNS`.
+//!
+//! Returns one `String` per output line — `main.rs` `println!`s each in
+//! turn, since Claude Code renders every printed line as its own status-line
+//! row.
 
-use crate::bar::{
-    build_bar, color_for_context, color_for_pace, fmt_pct, Color, BAR_WIDTH, DIM, RESET,
-};
+use crate::config::{Config, Layout};
 use crate::git::GitInfo;
-use crate::input::{Input, RateWindow};
+use crate::input::Input;
+use crate::segments::{self, RenderCtx, Segment};
+use crate::theme::{self, Role, Theme};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const ICON_MODEL: char = '\u{F2DB}'; // microchip
-const ICON_GIT: char = '\u{F418}'; // git-branch
-const ICON_CTX: char = '\u{F0E4}'; // dashboard
-const ICON_5H: char = '\u{F017}'; // clock
-const ICON_7D: char = '\u{F133}'; // calendar
+/// Segment names that belong on the "meters" row in two-line layout.
+/// Everything else goes on the "identity" row.
+const METER_SEGMENTS: [&str; 6] = ["ctx", "5h", "7d", "reset", "tokens", "pet"];
 
-const FIVE_HOUR_SECONDS: f64 = 18_000.0;
-const SEVEN_DAY_SECONDS: f64 = 604_800.0;
+pub fn render(input: &Input, git: Option<&GitInfo>, config: &Config, now_sec: f64) -> Vec<String> {
+    let theme = Theme::by_name(&config.theme);
+    let depth = config.color_override.unwrap_or_else(theme::detect_depth);
+    let ctx = RenderCtx {
+        input,
+        git,
+        config,
+        theme: &theme,
+        depth,
+        now_sec,
+    };
 
-struct WindowResult {
-    seg: String,
-    used_pct: Option<f64>,
-    elapsed_pct: Option<f64>,
-}
+    let (five_h, seven_d) = segments::compute_windows(&ctx);
+    let all = segments::build_all(&ctx, &five_h, &seven_d);
 
-pub fn render(input: &Input, git: Option<&GitInfo>, nerd: bool, now_sec: f64) -> String {
-    let mut segments = Vec::new();
-
-    segments.push(model_segment(input, nerd));
-    if let Some(g) = git {
-        segments.push(git_segment(g, nerd));
+    match config.layout {
+        Layout::OneLine => vec![assemble_row(all, &ctx).unwrap_or_default()],
+        Layout::TwoLine => {
+            let (meters, identity): (Vec<Segment>, Vec<Segment>) = all
+                .into_iter()
+                .partition(|s| METER_SEGMENTS.contains(&s.name));
+            [assemble_row(identity, &ctx), assemble_row(meters, &ctx)]
+                .into_iter()
+                .flatten()
+                .collect()
+        }
     }
-
-    let ctx_pct = input.ctx_used_pct();
-    segments.push(context_segment(ctx_pct, nerd));
-
-    let five_h = window_segment(
-        input.five_hour(),
-        FIVE_HOUR_SECONDS,
-        ICON_5H,
-        "5h",
-        nerd,
-        now_sec,
-    );
-    let seven_d = window_segment(
-        input.seven_day(),
-        SEVEN_DAY_SECONDS,
-        ICON_7D,
-        "7d",
-        nerd,
-        now_sec,
-    );
-    segments.push(five_h.seg.clone());
-    segments.push(seven_d.seg.clone());
-
-    segments.push(pet_face(ctx_pct, &five_h).to_string());
-
-    let sep = format!(" {DIM}|{RESET} ");
-    segments.join(&sep)
 }
 
 /// Convenience wrapper used by `main` for the real invocation (now = current
 /// time). Split out from `render` so tests can pin `now_sec`.
-pub fn render_now(input: &Input, git: Option<&GitInfo>, nerd: bool) -> String {
+pub fn render_now(input: &Input, git: Option<&GitInfo>, config: &Config) -> Vec<String> {
     let now_sec = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    render(input, git, nerd, now_sec)
+    render(input, git, config, now_sec)
 }
 
-fn model_segment(input: &Input, nerd: bool) -> String {
-    let icon = if nerd {
-        format!("{ICON_MODEL} ")
-    } else {
-        String::new()
-    };
-    format!("{icon}{}", input.model_name())
+/// Joins `segs` with the configured separator, then — if `$COLUMNS` is set
+/// and narrower than the result — drops segments lowest-priority-first
+/// until it fits (or only one segment remains). Never truncates mid-glyph:
+/// whole segments are dropped, not characters. Returns `None` for an empty
+/// input so callers can skip printing an empty row entirely.
+fn assemble_row(segs: Vec<Segment>, ctx: &RenderCtx) -> Option<String> {
+    let columns = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok());
+    assemble_row_with_columns(segs, ctx, columns)
 }
 
-fn git_segment(git: &GitInfo, nerd: bool) -> String {
-    let icon = if nerd {
-        format!("{ICON_GIT} ")
-    } else {
-        String::new()
-    };
-    let dirty_marker = if git.dirty { "*" } else { "" };
-    format!("{icon}{}{dirty_marker}", git.branch)
-}
+/// The pure, env-independent core of `assemble_row` — split out so tests can
+/// exercise the overflow-drop logic without mutating the process-global
+/// `COLUMNS` env var (which would race with other tests running in
+/// parallel).
+fn assemble_row_with_columns(
+    mut segs: Vec<Segment>,
+    ctx: &RenderCtx,
+    columns: Option<usize>,
+) -> Option<String> {
+    if segs.is_empty() {
+        return None;
+    }
 
-fn context_segment(ctx_pct: Option<f64>, nerd: bool) -> String {
-    let icon = if nerd {
-        format!("{ICON_CTX} ")
-    } else {
-        "ctx ".to_string()
-    };
-    let color = color_for_context(ctx_pct);
-    let bar = build_bar(BAR_WIDTH, ctx_pct, None, nerd);
-    format!("{icon}{}[{bar}]{RESET} {}", color.ansi(), fmt_pct(ctx_pct))
-}
-
-fn window_segment(
-    rl: Option<&RateWindow>,
-    total_seconds: f64,
-    icon_char: char,
-    label: &str,
-    nerd: bool,
-    now_sec: f64,
-) -> WindowResult {
-    let icon = if nerd {
-        format!("{icon_char} ")
-    } else {
-        format!("{label} ")
-    };
-    let used_pct = rl.and_then(|w| w.used_percentage);
-
-    let Some(used_pct) = used_pct else {
-        let bar = build_bar(BAR_WIDTH, None, None, nerd);
-        return WindowResult {
-            seg: format!("{icon}{}[{bar}]{RESET} n/a", Color::Gray.ansi()),
-            used_pct: None,
-            elapsed_pct: None,
-        };
-    };
-
-    let resets_at = rl.and_then(|w| w.resets_at);
-    let (elapsed_pct, pace_idx) = match resets_at {
-        Some(resets_at) => {
-            let elapsed_sec = total_seconds - (resets_at - now_sec);
-            let e = (elapsed_sec / total_seconds * 100.0).clamp(0.0, 100.0);
-            let idx = ((e / 100.0) * BAR_WIDTH as f64).round() as usize;
-            (Some(e), Some(idx))
+    if let Some(cols) = columns {
+        loop {
+            let joined = join_segments(&segs, ctx);
+            if display_width(&joined) <= cols || segs.len() <= 1 {
+                return Some(joined);
+            }
+            let drop_idx = segs
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, s)| s.priority)
+                .map(|(i, _)| i)
+                .expect("segs is non-empty");
+            segs.remove(drop_idx);
         }
-        None => (None, None),
-    };
-
-    let color = color_for_pace(Some(used_pct), elapsed_pct);
-    let bar = build_bar(BAR_WIDTH, Some(used_pct), pace_idx, nerd);
-    WindowResult {
-        seg: format!(
-            "{icon}{}[{bar}]{RESET} {}",
-            color.ansi(),
-            fmt_pct(Some(used_pct))
-        ),
-        used_pct: Some(used_pct),
-        elapsed_pct,
+    } else {
+        Some(join_segments(&segs, ctx))
     }
 }
 
-/// Mood reflects the worse of context-window usage and how far the 5h bar is
-/// running ahead of its own pace marker (never how far *behind*, since being
-/// behind pace isn't something to be stressed about).
-fn pet_face(ctx_pct: Option<f64>, five_h: &WindowResult) -> &'static str {
-    let five_h_ahead = match (five_h.used_pct, five_h.elapsed_pct) {
-        (Some(u), Some(e)) => (u - e).max(0.0),
-        _ => 0.0,
-    };
-    let worst = ctx_pct.unwrap_or(0.0).max(five_h_ahead);
-
-    if worst < 15.0 {
-        ":)"
-    } else if worst < 40.0 {
-        ":/"
-    } else if worst < 70.0 {
-        ">:("
-    } else {
-        "X_X"
+fn join_segments(segs: &[Segment], ctx: &RenderCtx) -> String {
+    let glyph = ctx.config.separator.glyph();
+    let texts: Vec<&str> = segs.iter().map(|s| s.text.as_str()).collect();
+    if glyph.is_empty() {
+        return texts.join("  ");
     }
+    let sep = format!(
+        " {}{glyph}{} ",
+        ctx.theme.sgr(Role::Dim, ctx.depth),
+        theme::reset(ctx.depth)
+    );
+    texts.join(&sep)
+}
+
+/// Strips ANSI escape sequences, for width measurement and for tests that
+/// assert on plain content (labels, bars, percentages) without hardcoding
+/// color codes.
+pub(crate) fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Consume through the final byte of the CSI sequence ('m' for
+            // the SGR codes this renderer emits).
+            for c2 in chars.by_ref() {
+                if c2 == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn display_width(s: &str) -> usize {
+    strip_ansi(s).chars().count()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::input::Input;
+    use crate::theme::ColorDepth;
 
     fn fixture(raw: &str) -> Input {
         Input::parse(raw)
     }
 
-    /// Strips ANSI escape sequences so assertions can check plain content
-    /// (labels, bars, percentages) without hardcoding color codes.
-    fn strip_ansi(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                // Consume through the final byte of the CSI sequence ('m' for
-                // the SGR codes this renderer emits).
-                for c2 in chars.by_ref() {
-                    if c2 == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
+    /// Built from `Config::default()` directly (never `Config::load`), so
+    /// tests are deterministic regardless of whatever real config file may
+    /// exist at `~/.claude/zeek-meter-statusline.json` on the machine
+    /// running them.
+    fn no_color_config() -> Config {
+        Config {
+            color_override: Some(ColorDepth::None),
+            ..Config::default()
         }
-        out
     }
 
     #[test]
@@ -205,56 +167,104 @@ mod tests {
         // five_hour: used 60%, resets_at chosen so elapsed = 50% -> yellow, marker at idx 5
         // seven_day: used 20%, resets_at chosen so elapsed = 50% -> green, marker at idx 5
         let now = 1_000_000.0;
-        let five_resets = now + FIVE_HOUR_SECONDS / 2.0;
-        let seven_resets = now + SEVEN_DAY_SECONDS / 2.0;
+        let five_resets = now + segments::FIVE_HOUR_SECONDS / 2.0;
+        let seven_resets = now + segments::SEVEN_DAY_SECONDS / 2.0;
         let raw = format!(
             r#"{{"model":{{"display_name":"Sonnet 5"}},"context_window":{{"used_percentage":42}},
             "rate_limits":{{"five_hour":{{"used_percentage":60,"resets_at":{five_resets}}},
             "seven_day":{{"used_percentage":20,"resets_at":{seven_resets}}}}}}}"#
         );
         let input = fixture(&raw);
-        let line = strip_ansi(&render(&input, None, false, now));
+        let mut cfg = no_color_config();
+        cfg.nerd_font = false;
+        let lines = render(&input, None, &cfg, now);
+        assert_eq!(lines.len(), 1);
+        let line = strip_ansi(&lines[0]);
 
         assert!(line.contains("Sonnet 5"));
         assert!(line.contains("ctx [####------] 42%")); // ctx 42% -> 4 filled
         assert!(line.contains("5h [#####|----] 60%")); // 5h pace marker at idx 5
         assert!(line.contains("7d [##---|----] 20%")); // 7d pace marker at idx 5
-        assert!(line.ends_with(">:(")); // worst = max(42, 60-50=10) = 42 -> stressed
     }
 
     #[test]
     fn missing_fields_render_gracefully() {
         let input = fixture(r#"{"model":{"display_name":"Opus"}}"#);
-        let line = strip_ansi(&render(&input, None, false, 1_000_000.0));
+        let mut cfg = no_color_config();
+        cfg.nerd_font = false;
+        cfg.pet_enabled = false;
+        let lines = render(&input, None, &cfg, 1_000_000.0);
+        let line = strip_ansi(&lines[0]);
         assert!(line.contains("Opus"));
         assert!(line.contains("ctx [----------] n/a"));
         assert!(line.contains("5h [----------] n/a"));
         assert!(line.contains("7d [----------] n/a"));
-        assert!(line.ends_with(":)")); // worst = 0 -> calm
-    }
-
-    #[test]
-    fn overheated_case() {
-        let now = 1_000_000.0;
-        let five_resets = now + FIVE_HOUR_SECONDS * 0.11; // ~11% elapsed
-        let seven_resets = now + SEVEN_DAY_SECONDS * 0.08; // ~92% elapsed
-        let raw = format!(
-            r#"{{"model":{{"display_name":"Opus"}},"context_window":{{"used_percentage":85}},
-            "rate_limits":{{"five_hour":{{"used_percentage":95,"resets_at":{five_resets}}},
-            "seven_day":{{"used_percentage":10,"resets_at":{seven_resets}}}}}}}"#
-        );
-        let input = fixture(&raw);
-        let line = render(&input, None, false, now);
-        assert!(line.ends_with("X_X"));
     }
 
     #[test]
     fn nerd_font_uses_icons_and_block_chars() {
         let input =
             fixture(r#"{"model":{"display_name":"Opus"},"context_window":{"used_percentage":10}}"#);
-        let line = render(&input, None, true, 1_000_000.0);
-        assert!(line.contains(ICON_MODEL));
-        assert!(line.contains(ICON_CTX));
-        assert!(line.contains('█') || line.contains('░'));
+        let mut cfg = no_color_config();
+        cfg.nerd_font = true;
+        let lines = render(&input, None, &cfg, 1_000_000.0);
+        let line = &lines[0];
+        assert!(line.contains('\u{F2DB}'));
+        assert!(line.contains('\u{F0E4}'));
+        assert!(line.contains('\u{2588}') || line.contains('\u{2591}'));
+    }
+
+    #[test]
+    fn two_line_layout_splits_identity_from_meters() {
+        let input =
+            fixture(r#"{"model":{"display_name":"Opus"},"context_window":{"used_percentage":10}}"#);
+        let mut cfg = no_color_config();
+        cfg.nerd_font = false;
+        cfg.layout = Layout::TwoLine;
+        let lines = render(&input, None, &cfg, 1_000_000.0);
+        assert_eq!(lines.len(), 2);
+        assert!(strip_ansi(&lines[0]).contains("Opus"));
+        assert!(strip_ansi(&lines[1]).contains("ctx"));
+    }
+
+    #[test]
+    fn columns_overflow_drops_lowest_priority_segment_first() {
+        // Exercises assemble_row_with_columns directly (rather than through
+        // render()'s env-var-reading assemble_row) so this test doesn't
+        // mutate the process-global COLUMNS var and race other tests.
+        let now = 1_000_000.0;
+        let raw = format!(
+            r#"{{"model":{{"display_name":"Opus"}},"context_window":{{"used_percentage":10}},
+            "cost":{{"total_cost_usd":0.42}},
+            "rate_limits":{{"five_hour":{{"used_percentage":5,"resets_at":{}}}}}}}"#,
+            now + segments::FIVE_HOUR_SECONDS / 2.0
+        );
+        let input = fixture(&raw);
+        let mut cfg = no_color_config();
+        cfg.nerd_font = false;
+        cfg.segments = vec!["model".to_string(), "ctx".to_string(), "cost".to_string()];
+        let theme = Theme::by_name(&cfg.theme);
+        let ctx = RenderCtx {
+            input: &input,
+            git: None,
+            config: &cfg,
+            theme: &theme,
+            depth: ColorDepth::None,
+            now_sec: now,
+        };
+        let (five_h, seven_d) = segments::compute_windows(&ctx);
+        let all = segments::build_all(&ctx, &five_h, &seven_d);
+        let line = assemble_row_with_columns(all, &ctx, Some(20)).unwrap();
+        // "cost" has the lowest priority of the three and should be dropped
+        // first to fit a narrow terminal; "model" (highest priority) must
+        // survive.
+        assert!(!strip_ansi(&line).contains('$'));
+        assert!(strip_ansi(&line).contains("Opus"));
+    }
+
+    #[test]
+    fn strip_ansi_removes_escape_sequences() {
+        let colored = "\x1b[32mgreen\x1b[0m plain";
+        assert_eq!(strip_ansi(colored), "green plain");
     }
 }

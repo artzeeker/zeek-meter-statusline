@@ -10,18 +10,22 @@ To pass params, download into a scriptblock and invoke it directly:
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/artzeeker/zeek-meter-statusline/main/install.ps1))) -Yes
     & ([scriptblock]::Create((irm .../install.ps1))) -Version v1.2.0
     & ([scriptblock]::Create((irm .../install.ps1))) -NoFont
+    & ([scriptblock]::Create((irm .../install.ps1))) -NoWizard
 
 No dependency beyond Invoke-WebRequest/Invoke-RestMethod (built into
 PowerShell) and the downloaded binary itself: settings.json and VS Code
 config edits are delegated to `zeek-meter-statusline init ...` rather than
 done here, so this script never needs jq.
+
+To uninstall: irm https://raw.githubusercontent.com/artzeeker/zeek-meter-statusline/main/uninstall.ps1 | iex
 #>
 [CmdletBinding()]
 param(
     [string]$Version = "",
     [switch]$Yes,
     [switch]$NoFont,
-    [switch]$NoTerminalConfig
+    [switch]$NoTerminalConfig,
+    [switch]$NoWizard
 )
 
 $ErrorActionPreference = "Stop"
@@ -308,6 +312,16 @@ public static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint Msg, UIntPtr w
     }
 
     # -------------------------------------------------------------------
+    # Config wizard (optional, interactive only)
+    # -------------------------------------------------------------------
+
+    if (-not $NoWizard -and -not $Yes) {
+        if (Confirm-Action "Run the interactive config wizard now (theme, layout, extra segments)?" "n") {
+            & $InstalledBin config
+        }
+    }
+
+    # -------------------------------------------------------------------
     # Done
     # -------------------------------------------------------------------
 
@@ -320,7 +334,9 @@ public static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint Msg, UIntPtr w
             Write-Log "Fully quit and reopen VS Code (not just reload window) - it only picks up fonts at process start."
         }
     }
-    Write-Log "Options: -Version vX.Y.Z to pin, -NoFont, -NoTerminalConfig, -Yes for non-interactive (see script header for how to pass these through irm|iex)."
+    Write-Log "Run '$InstalledBin config' any time to change the theme, layout, or which segments show."
+    Write-Log "Run 'irm https://raw.githubusercontent.com/$Repo/main/uninstall.ps1 | iex' to uninstall."
+    Write-Log "Options: -Version vX.Y.Z to pin, -NoFont, -NoTerminalConfig, -NoWizard, -Yes for non-interactive (see script header for how to pass these through irm|iex)."
 } finally {
     Remove-Item -Path $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 }

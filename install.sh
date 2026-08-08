@@ -9,6 +9,9 @@
 #   curl -fsSL .../install.sh | bash -s -- --version v1.2.0      # pin a version
 #   curl -fsSL .../install.sh | bash -s -- --no-font              # skip Nerd Font install
 #   curl -fsSL .../install.sh | bash -s -- --no-terminal-config   # skip VS Code font-fallback edit
+#   curl -fsSL .../install.sh | bash -s -- --no-wizard            # skip the config-wizard offer
+#
+# To uninstall: curl -fsSL https://raw.githubusercontent.com/artzeeker/zeek-meter-statusline/main/uninstall.sh | bash
 #
 # No dependency beyond curl + the downloaded binary itself: settings.json and
 # VS Code config edits are delegated to `zeek-meter-statusline init ...`
@@ -25,12 +28,14 @@ VERSION=""
 ASSUME_YES=0
 WANT_FONT=1
 WANT_TERMINAL_CONFIG=1
+WANT_WIZARD=1
 
 for arg in "$@"; do
   case "$arg" in
     --yes|-y) ASSUME_YES=1 ;;
     --no-font) WANT_FONT=0 ;;
     --no-terminal-config) WANT_TERMINAL_CONFIG=0 ;;
+    --no-wizard) WANT_WIZARD=0 ;;
     --version)
       : # value consumed below
       ;;
@@ -415,6 +420,17 @@ if [ "$WANT_TERMINAL_CONFIG" -eq 1 ] && [ "$font_installed_ok" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Config wizard (optional, interactive only — there's nothing useful to do
+# here in --yes/non-interactive mode, since the wizard is a prompt loop)
+# ---------------------------------------------------------------------------
+
+if [ "$WANT_WIZARD" -eq 1 ] && [ "$INTERACTIVE" -eq 1 ]; then
+  if confirm "Run the interactive config wizard now (theme, layout, extra segments)?" n; then
+    "$INSTALLED_BIN" config < "$TTY"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 
@@ -426,4 +442,6 @@ if [ "$font_installed_ok" -eq 1 ]; then
     log "Fully quit and reopen VS Code (not just reload window) — it only picks up fonts at process start."
   fi
 fi
-log "Options: --version vX.Y.Z to pin, --no-font, --no-terminal-config, --yes for non-interactive."
+log "Run '$INSTALLED_BIN config' any time to change the theme, layout, or which segments show."
+log "Run 'curl -fsSL https://raw.githubusercontent.com/$REPO/main/uninstall.sh | bash' to uninstall."
+log "Options: --version vX.Y.Z to pin, --no-font, --no-terminal-config, --no-wizard, --yes for non-interactive."

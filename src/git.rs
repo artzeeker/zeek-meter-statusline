@@ -111,7 +111,9 @@ fn cache_file_path(session_id: Option<&str>, cwd: &Path) -> Option<PathBuf> {
     Some(std::env::temp_dir().join(format!("zeek-meter-statusline-git-{key}-{cwd_hash:x}")))
 }
 
-fn hash_path(cwd: &Path) -> u64 {
+/// Shared with `pet.rs`'s activity-probe cache, which keys its temp file the
+/// same way this module's dirty-flag cache does.
+pub(crate) fn hash_path(cwd: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -119,7 +121,7 @@ fn hash_path(cwd: &Path) -> u64 {
     hasher.finish()
 }
 
-fn sanitize_key(key: &str) -> String {
+pub(crate) fn sanitize_key(key: &str) -> String {
     key.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' {

@@ -1,19 +1,27 @@
 //! zeek-meter-statusline: a status line for Claude Code.
 //!
-//! Two modes:
+//! Modes:
 //!  - default (no subcommand): reads the session JSON Claude Code pipes to
-//!    stdin, prints one rendered status line.
+//!    stdin, prints the rendered status line (one or two lines, per config).
 //!  - `init ...`: one-shot setup helpers the installer (`install.sh`) calls
 //!    into, so the installer itself never needs `jq` to do JSON work — see
 //!    `settings.rs` and `terminal.rs` for why that matters.
+//!  - `config ...`: interactive setup wizard plus `--show`/`--set`/`--preview`.
+//!  - `uninstall ...`: reverses everything the installer did.
 
 mod bar;
 mod config;
+mod font;
+mod fsutil;
 mod git;
 mod input;
+mod pet;
 mod render;
+mod segments;
 mod settings;
 mod terminal;
+mod theme;
+mod uninstall;
 
 use std::io::Read;
 use std::path::Path;
@@ -29,19 +37,20 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if args.first().map(String::as_str) == Some("init") {
-        return run_init(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("init") => run_init(&args[1..]),
+        Some("config") => ExitCode::from(config::wizard::run(&args[1..]) as u8),
+        Some("uninstall") => ExitCode::from(uninstall::run(&args[1..]) as u8),
+        _ => run_statusline(&args),
     }
-
-    run_statusline(&args)
 }
 
 fn run_statusline(args: &[String]) -> ExitCode {
-    let mut cli_nerd_font: Option<bool> = None;
+    let mut cli = config::CliOverrides::default();
     for a in args {
         match a.as_str() {
-            "--nerd-font" => cli_nerd_font = Some(true),
-            "--no-nerd-font" => cli_nerd_font = Some(false),
+            "--nerd-font" => cli.nerd_font = Some(true),
+            "--no-nerd-font" => cli.nerd_font = Some(false),
             _ => {}
         }
     }
@@ -56,8 +65,10 @@ fn run_statusline(args: &[String]) -> ExitCode {
         .or_else(|| std::env::current_dir().ok())
         .and_then(|cwd| git::git_info(&cwd, data.session_id.as_deref()));
 
-    let nerd = config::resolve_nerd_font(cli_nerd_font);
-    println!("{}", render::render_now(&data, git_info.as_ref(), nerd));
+    let cfg = config::Config::load(&cli);
+    for line in render::render_now(&data, git_info.as_ref(), &cfg) {
+        println!("{line}");
+    }
     ExitCode::SUCCESS
 }
 

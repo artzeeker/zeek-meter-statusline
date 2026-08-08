@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.0.0
+
+Configurable, uninstallable, and considerably more colorful.
+
+- **Uninstall.** `zeek-meter-statusline uninstall` (also reachable via `uninstall.sh`/`uninstall.ps1`, mirroring the installers) reverses everything the installer did: the `statusLine` entry in `settings.json` (only if it still points at this binary), the VS Code font fallback, this tool's own config file, and — opt-in via `--remove-font` — the Nerd Font pack itself. `--dry-run` reports what would happen without changing anything.
+- **`config` subcommand.** An interactive wizard (theme, layout, Nerd Font, extra segments, pet animation) that writes `~/.claude/zeek-meter-statusline.json`, plus `config --show` (resolved settings and where each came from), `config --set KEY=VALUE`, and `config --preview` for a live sample line with no session needed.
+- **Truecolor themes.** Five presets (`neon`, `warm`, `mono`, `dracula`, `nord`), each a full RGB ramp that auto-downgrades to 256-color, 16-color, or plain text based on `COLORTERM`/`TERM`/`NO_COLOR` (or an explicit `CLAUDE_STATUSLINE_COLOR` override). Bars are tinted cool-to-hot along their length in Nerd Font mode; ASCII mode keeps v1's flat single-color bars.
+- **Sub-cell bar precision.** Nerd Font bars now fill in eighth-of-a-cell steps (80 steps at the default width, vs. 10) instead of rounding to the nearest whole cell. The pace marker (`|`) is unchanged — still one cell, still overwrites whatever's under it — just recolored to the theme's accent so it stays visible against the gradient.
+- **A more alive pet.** Seven states (fresh, calm, actively-working, worried, stressed, overheated, celebrating-a-reset) instead of four static faces, each with a short animation cycle that advances while Claude Code is actively redrawing the status line and holds still when idle. Kaomoji/box-drawing only, no emoji, so the line's width never jitters.
+- **Eight new opt-in segments** reading the rest of what Claude Code already sends: `cost`, `duration`, `lines` (from `cost.*`), `effort`, `mode` (thinking/fast-mode/output-style/agent/vim), `pr`, `worktree`, `repo`, `reset` (time left in each rate-limit window), and `tokens` (raw token counts, correctly handling 1M-context models). Off by default — the out-of-the-box line is unchanged; add them via `config` or the config file's `segments` array.
+- **Optional two-line layout** (`"layout": "two-line"`): identity/extras on the first row, meters and the pet on the second. Either layout drops low-priority segments first if the row would overflow `$COLUMNS`.
+
+Everything above is additive to the default experience: with no config file, v2 still shows the same segments in the same order as v1 (`model | git | ctx | 5h | 7d | pet`) — just with a default truecolor theme, finer bars, and a livelier pet in place of v1's fixed 4-color palette and static faces.
+
 ## v1.0.1
 
 - **Fix: Nerd Font icons never rendered on Windows (tofu boxes), even after a reboot.** Both installers registered the per-user font in `HKCU\...\CurrentVersion\Fonts` with a bare filename; Windows resolves that relative to the machine-wide `%WINDIR%\Fonts` dir, so the font was copied but never actually enumerable. Now registered with the full path, matching how Windows registers its own per-user fonts. `install.ps1` also activates newly-registered fonts in the current session immediately (`AddFontResource` + `WM_FONTCHANGE` broadcast) instead of requiring a sign-out.
